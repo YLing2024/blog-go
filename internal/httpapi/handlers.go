@@ -344,10 +344,18 @@ func (s *Server) handleUploadPost(c *Context) (Response, error) {
 	r := c.Request
 	r.Body = http.MaxBytesReader(c.Writer, r.Body, uploadLimit+1<<20)
 	if err := r.ParseMultipartForm(uploadLimit + 1<<20); err != nil {
+		// 非 multipart 请求（如 JSON）：旧实现 multer 直接跳过并视为「未收到图片」。
+		if errors.Is(err, http.ErrNotMultipart) {
+			return Response{Status: http.StatusBadRequest, Body: messageJSON("未收到图片（字段名 image）")}, nil
+		}
 		return Response{Status: http.StatusBadRequest, Body: messageJSON("上传失败（文件过大或不是有效的图片表单）")}, nil
 	}
 	file, header, err := r.FormFile("image")
 	if err != nil {
+		// 有文件分区但不是 image：对齐 multer `.single('image')` 的 LIMIT_UNEXPECTED_FILE。
+		if r.MultipartForm != nil && len(r.MultipartForm.File) > 0 {
+			return Response{Status: http.StatusBadRequest, Body: messageJSON("Unexpected file field")}, nil
+		}
 		return Response{Status: http.StatusBadRequest, Body: messageJSON("未收到图片（字段名 image）")}, nil
 	}
 	defer file.Close()
