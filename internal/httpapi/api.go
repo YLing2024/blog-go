@@ -29,6 +29,9 @@ import (
 const (
 	contentTypeJSON = "application/json; charset=utf-8"
 	contentTypeHTML = "text/html; charset=UTF-8"
+	// contentTypeHTMLExpress 是 Express `res.send(string)` 的默认类型（charset 小写），
+	// 仅用于 OPTIONS 自动回退响应；站点托管用的 contentTypeHTML 是大写 UTF-8，两者不可混用。
+	contentTypeHTMLExpress = "text/html; charset=utf-8"
 )
 
 // Options 是装配参数。
@@ -176,11 +179,24 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			s.run(w, head, ctx, route)
 			return
 		}
+		// ④ Express 对 OPTIONS 的自动回退：路径命中已注册路由时回 200 + Allow（体同串），
+		// 未命中不在此处理，交给紧随其后的既有 404（与旧实现一致）。
+		if r.Method == http.MethodOptions {
+			if allow := s.allowedMethods(path); allow != "" {
+				s.write(w, false, Response{
+					Status:      http.StatusOK,
+					ContentType: contentTypeHTMLExpress,
+					Headers:     map[string]string{"Allow": allow},
+					Body:        rawBody([]byte(allow)),
+				})
+				return
+			}
+		}
 		s.write(w, head, notFound())
 		return
 	}
 
-	// ④ 静态托管 + SPA 回退（仅 GET/HEAD）
+	// ⑤ 静态托管 + SPA 回退（仅 GET/HEAD）
 	if method == http.MethodGet {
 		s.serveStatic(w, r, head)
 		return
@@ -248,6 +264,32 @@ func isBlogAPI(path string) bool {
 }
 
 // --- 路由匹配 ---
+
+// allowedMethods 复刻 Express Router 的 OPTIONS 自动回退：按注册顺序扫描与路径匹配的路由，
+// 收集其方法（GET 附带 HEAD，与 Express route._options 一致），去重后用逗号连接；无匹配返回空串。
+// 只看已注册的方法，与鉴权中间件无关——旧实现也在路由处理器之前就给出 Allow。
+func (s *Server) allowedMethods(path string) string {
+	methods := make([]string, 0, 4)
+	seen := map[string]bool{}
+	add := func(method string) {
+		if method == "" || seen[method] {
+			return
+		}
+		seen[method] = true
+		methods = append(methods, method)
+	}
+	for i := range s.routes {
+		rt := &s.routes[i]
+		if _, ok := matchRoutePath(rt.routePath, path); !ok {
+			continue
+		}
+		add(rt.method)
+		if rt.method == http.MethodGet {
+			add(http.MethodHead)
+		}
+	}
+	return strings.Join(methods, ",")
+}
 
 // matchStage 在当前阶段里按注册顺序找第一条命中（方法 + 路径）的路由。
 func (s *Server) matchStage(stage routeStage, method, path string) (*apiRoute, map[string]string, bool) {
