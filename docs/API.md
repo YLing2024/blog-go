@@ -9,6 +9,7 @@
 - 错误体统一为 `{"message":"..."}`。
 - 未匹配到任何 API 路由的 `/api/blog/*` 请求一律返回 `404 {"message":"接口不存在"}`；
   处理过程中抛出的未预期错误返回 `500 {"message":"服务器内部错误"}`。
+- `OPTIONS` / `HEAD` 的方法回退（Express Router 语义）见文末「方法回退（OPTIONS / HEAD）」一节。
 
 ## 认证模式
 
@@ -474,3 +475,56 @@
 - 副作用：把文件写入 `UPLOAD_DIR`（默认 `./data/uploads`），文件名 `<毫秒>-<0..1000000><扩展名>`。非幂等。
 - 备注：超限/表单错误的文案与旧实现 multer 的英文文案不同（旧实现会把 multer 原始英文错误透出），
   属有意为之的中文化差异，状态码一致（`400`）。
+
+## 方法回退（OPTIONS / HEAD）
+
+Express 4 的 Router 会对已注册路由自动处理 `OPTIONS` 与 `HEAD`；本节固化该语义，新版逐字节对齐。
+以下是旧实现（Express 4.22 + 旧路由）与新版并排实测结果（同一份库数据，仅列出与本节相关的响应头/体）。
+
+`OPTIONS`：
+
+- **路径命中任一已注册路由** → `200` `text/html; charset=utf-8`（Express `res.send(string)` 默认类型），
+  响应头 `Allow: <方法集合>`，**响应体就是该串本身**（如 `GET,HEAD,POST`，无换行）。
+- **路径未命中** → 走既有 404：`404 application/json {"message":"接口不存在"}`。
+- `Allow` 按该路径**真实注册的方法**算，与鉴权无关（鉴权中间件之前的 Router 栈即为依据）：
+  按路由注册顺序收集、去重；只注册 `GET` 的方法集合为 `GET,HEAD`（Express 在 GET 后补 `HEAD`）。
+
+| 路径 | OPTIONS 状态 | Allow | OPTIONS 体 |
+|---|---|---|---|
+| `/api/blog/auth-mode` | 200 | `GET,HEAD` | `GET,HEAD` |
+| `/api/blog/posts` | 200 | `GET,HEAD` | `GET,HEAD` |
+| `/api/blog/posts/:slug` | 200 | `GET,HEAD` | `GET,HEAD` |
+| `/api/blog/collections` | 200 | `GET,HEAD` | `GET,HEAD` |
+| `/api/blog/collections/:slug` | 200 | `GET,HEAD` | `GET,HEAD` |
+| `/api/blog/uploads/:name` | 200 | `GET,HEAD` | `GET,HEAD` |
+| `/api/blog/admin/login` | 200 | `POST` | `POST` |
+| `/api/blog/admin/logout` | 200 | `POST` | `POST` |
+| `/api/blog/admin/me` | 200 | `GET,HEAD` | `GET,HEAD` |
+| `/api/blog/admin/posts` | 200 | `GET,HEAD,POST` | `GET,HEAD,POST` |
+| `/api/blog/admin/posts/:id` | 200 | `PUT,DELETE` | `PUT,DELETE` |
+| `/api/blog/admin/posts/:id/preview-link` | 200 | `GET,HEAD` | `GET,HEAD` |
+| `/api/blog/admin/collections` | 200 | `GET,HEAD,POST` | `GET,HEAD,POST` |
+| `/api/blog/admin/collections/:id` | 200 | `PUT,DELETE` | `PUT,DELETE` |
+| `/api/blog/admin/upload` | 200 | `POST` | `POST` |
+| `/api/blog/nope`、`/api/blog/admin/nope`、`/api/blog` | 404 | —（无 `Allow` 头） | `{"message":"接口不存在"}` |
+
+`HEAD`：
+
+- **路径命中只注册了 `GET` 的路由** → 走该 `GET` 处理器：状态码、`Content-Type` 等响应头与 `GET` 相同，
+  **响应体为空**，`Content-Length` 按 `GET` 的响应体字节数给出（Express 先算出体再丢弃，长度即 GET 的体长）。
+- **路径只注册了非 `GET` 方法**（如 `POST`、`PUT`/`DELETE`）→ 回落 404（Express 只把 `HEAD` 映射到 `GET`）。
+- **路径未命中** → 404。
+
+对照示例（实测）：
+
+| 请求 | 旧实现 | 新版 |
+|---|---|---|
+| `HEAD /api/blog/posts?page=1` | `200`，`Content-Type: application/json; charset=utf-8`，`Content-Length: 4144`，体空 | 同旧（逐条一致） |
+| `HEAD /api/blog/admin/posts`（带 Bearer） | `200`，`Content-Length` 为管理列表体长，体空 | 同旧 |
+| `HEAD /api/blog/admin/login` | `404 {"message":"接口不存在"}` | 同旧 |
+| `HEAD /api/blog/admin/posts/1` | `404 {"message":"接口不存在"}`（该路径只有 `PUT`/`DELETE`） | 同旧 |
+| `OPTIONS /api/blog/admin/posts` | `200`，`Allow: GET,HEAD,POST`，体 `GET,HEAD,POST` | 同旧 |
+| `OPTIONS /api/blog/nope` | `404 {"message":"接口不存在"}` | 同旧 |
+
+其余方法（如未注册的 `PATCH`）保持既有行为：命中路径但方法不匹配，或路径不匹配，一律
+`404 {"message":"接口不存在"}`。
