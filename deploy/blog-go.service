@@ -1,0 +1,26 @@
+[Unit]
+Description=blog-go 博客后端 API（Go 重写版）
+Documentation=file:///opt/blog-go/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=blog
+Group=blog
+# 真实值写在 /etc/blog-go/env（不入库）；本文件只是样例，不安装到 /etc。
+EnvironmentFile=-/etc/blog-go/env
+WorkingDirectory=/var/lib/blog-go
+ExecStart=/usr/local/bin/blog-go
+Restart=on-failure
+RestartSec=2
+
+# 最小权限：只允许写自己的数据目录（SQLite 库 + 上传图片）。
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/blog-go
+
+[Install]
+WantedBy=multi-user.target

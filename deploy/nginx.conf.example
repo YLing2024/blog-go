@@ -1,0 +1,42 @@
+# blog-go nginx 配置示例（部署模板，只读参考；本仓库不安装、不改动线上 nginx）。
+# 复制到 /etc/nginx/conf.d/blog-go.conf 并把 <YOUR_DOMAIN> 换成实际值后：
+#   nginx -t && systemctl reload nginx
+#
+#   - /api/blog/ : 博客 API（builtin 由服务自带会话鉴权；sso 交给前置认证网关注入 X-Auth-User）
+#   - /          : 站点静态 + SPA 回退（公开，由本进程托管）
+#
+# 与旧实现的差异：监听端口由 4000 改为 19255（新旧并存）；站点静态由本进程承担（旧实现走 nginx root）。
+# 本文件不涉及任何真实域名。
+
+server {
+    server_name <YOUR_DOMAIN>;
+
+    # ---- 博客 API ----
+    # builtin 模式：直接反代（服务自带会话鉴权）。
+    # sso 模式：把 /api/blog/ 交给前置认证网关，由网关注入 X-Auth-User 后再反代本服务。
+    location /api/blog/ {
+        proxy_pass http://127.0.0.1:19255;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # ---- 站点静态 + SPA 回退（公开）----
+    location / {
+        proxy_pass http://127.0.0.1:19255;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# HTTP → HTTPS 跳转
+server {
+    server_name <YOUR_DOMAIN>;
+    listen 80;
+    return 301 https://$host$request_uri;
+}
