@@ -79,10 +79,37 @@ go run . --sqlite /path/to/blog.db \
 go run . --sqlite /path/to/blog.db --mysql-host 127.0.0.1 --mysql-name blog --mysql-user blog --verify
 ```
 
-- 逐表流水线：**源计数 → 拷贝 → 目标计数 → 抽样比对**；默认模式可重复执行（upsert 幂等）。
+- 逐表流水线：**源计数 → 拷贝 → 目标计数 → 抽样比对 → 自增序号延续**；默认模式可重复执行（upsert 幂等）。
 - 源库以 `mode=ro` + `query_only(1)` 打开，只发 `SELECT`，绝不删改旧文件。
 - 目标库只做 `CREATE TABLE IF NOT EXISTS`（对齐云库 schema），保留原始主键值。
 - 表顺序 `collections → posts → users → tags`。
+
+### 自增序号延续（避免 id 回退/复用）
+
+SQLite 把「已用过的最大 id」记在 `sqlite_sequence.seq`（删行也不回退），下一条新记录的 id 是
+`seq + 1`；而 MySQL 的 `AUTO_INCREMENT` 本身就表示「下一条 id」。两者差一，所以迁移要显式接管：
+
+- 拷贝完成后，对每个带自增主键的表读源库 `sqlite_sequence`（存在时），把目标
+  `AUTO_INCREMENT` 抬到 **`max(源 seq + 1, 目标 max(id) + 1)`**；源无 `sqlite_sequence` 条目时
+  按 `目标 max(id) + 1` 处理。
+- **只升不降**：写之前先读目标现值（`information_schema.TABLES`，并 `SET SESSION
+  information_schema_stats_expiry = 0` 关掉 MySQL 8 的统计缓存，否则会读到迁移前的旧值）；
+  现值已不小于期望值时原样保留，绝不覆盖更大的现有值。
+- 例（现网快照）：`posts` 最大 id=19、`sqlite_sequence.seq=22`，旧实现下一条为 23；迁移后目标
+  `AUTO_INCREMENT` 由 20 抬到 23，新建文章拿到的 id 与旧实现一致。
+- `--verify` 一并校验这条关系：目标 `AUTO_INCREMENT` 必须 ≥ `max(源 seq + 1, 目标 max(id) + 1)`，
+  低于即报「自增序号未延续」。
+
+回归用例在同 module 的 `main_test.go`（`TestMigrateContinuesAutoIncrement`）：造一张
+`sqlite_sequence.seq > max(id)` 的旧库，断言迁移后目标 `AUTO_INCREMENT` 等于 `seq + 1`，再插一行
+断言拿到的 id 正确；另含 upsert 幂等与「只升不降」。需要一个临时 MySQL：
+
+```bash
+cd tools/migrate-sqlite-to-mysql
+MIGRATE_TEST_MYSQL_HOST=127.0.0.1 MIGRATE_TEST_MYSQL_PORT=<port> \
+MIGRATE_TEST_MYSQL_USER=root MIGRATE_TEST_MYSQL_PASSWORD='***' \
+  go test -run TestMigrateContinuesAutoIncrement -count=1
+```
 
 ## 5. 测试口径
 
