@@ -6,23 +6,25 @@
 ## 技术栈（固定）
 
 - HTTP：仅标准库 `net/http`；不引 Web 框架与路由库（分发顺序手写在 `internal/httpapi/routes.go`）。
-- 数据库：`modernc.org/sqlite`（纯 Go、无 cgo）+ `github.com/go-sql-driver/mysql`；业务 SQL 全收在 `internal/store`。
+- 数据库：**仅 MySQL**，`github.com/go-sql-driver/mysql`；业务 SQL 与建表/增量迁移全收在 `internal/store`。
 - Redis：`github.com/redis/go-redis/v9`（会话第二通道；未配置时降级，不影响启动）。
 - 口令：`internal/bcrypt` 纯 Go 移植（对齐旧实现 `bcryptjs` 的 `$2a$` 编码与校验）；不引 `x/crypto`。
 - JWT：`internal/jwt` 标准库自实现 HS256（含 `exp` / `nbf` / `preview` 声明）。
 - 日志：标准库 `log/slog`。
 - 前端：`web/` 原样搬入（站点源码来自生产前台 `homepage`）；产物经根包 `//go:embed all:web/dist` 打进二进制。
 
-**允许的第三方依赖只有 `modernc.org/sqlite`、`github.com/go-sql-driver/mysql`、`github.com/redis/go-redis/v9`**；
-新增依赖前先改本文件并说明。
+**服务模块允许的第三方依赖只有 `github.com/go-sql-driver/mysql`、`github.com/redis/go-redis/v9`**
+（2026-10-16 口径：不再支持 SQLite）；新增依赖前先改本文件并说明。
+旧 SQLite 数据由独立工具 `tools/migrate-sqlite-to-mysql/` 搬运：该工具是独立 Go module、自带
+`modernc.org/sqlite`，**不得被服务主程序 import**。
 
 ## 目录
 
-- `cmd/blog-go/`：进程入口（装配 + 优雅退出 + `migrate-data`）。
-- `internal/store/`：方言无关的业务 SQL 层 + 跨库搬运。
-- `internal/sqlite/`、`internal/mysql/`：两套薄方言（DDL / upsert / 自增回填 / 列探测 / DSN）。
+- `cmd/blog-go/`：进程入口（装配 + 优雅退出）。
+- `internal/store/`：业务 SQL 层 + MySQL 建表/增量迁移 + DSN。
 - `internal/httpapi/`：HTTP 契约层（分发顺序、静态托管、各路由）。
 - `internal/{config,snowflake,bcrypt,blowfish,jwt,auth,posts,collections,tags}/`：业务与工具。
+- `tools/migrate-sqlite-to-mysql/`：一次性迁移工具（独立 module，不参与服务运行时）。
 - `web/`：站点前端源码（原样搬入；`dist` 与 `node_modules` 不入库）。
 - `deploy/`：systemd / nginx 样例（**只提交，不安装到 `/etc`**）。
 
@@ -36,8 +38,10 @@
    **忽略**外部 `X-Auth-User`；`sso` 只认网关注入的 `X-Auth-User`（缺失/空 → 401），
    `login` / `logout` / `me` 一律 404。`GET /api/blog/auth-mode` 在两种模式下都必须可用。
    旧实现**没有**登录限速，本服务同样不引入。
-3. **数据库迁移只做增量**：禁止 `DROP` / `TRUNCATE` / 重建表；`public_id` 回填幂等且放在迁移之后、
-   种子之前（使首启示例文章 `public_id` 为空、二次启动回填，与旧实现一致）；两种方言下通过同一套测试。
+3. **数据库迁移只做增量**：禁止 `DROP` / `TRUNCATE` / 重建表；表名 / 列名 / 列类型 / 索引名逐条对齐
+   `go-rewrite/docs/mysql-schema-cloud.md` 的云库 `blog`，不得另立一套；`public_id` 回填幂等且放在
+   迁移之后、种子之前（使首启示例文章 `public_id` 为空、二次启动回填，与旧实现一致）。
+   只允许 `CREATE TABLE IF NOT EXISTS` 与 `ALTER TABLE ... ADD COLUMN`。
 
 ## 红线
 
@@ -52,6 +56,8 @@
 ## 命令
 
 - `make build` / `make test` / `make race` / `make vet` / `make check`（机检路由文档 + vet + 单测）。
+- 单测只跑 MySQL：`internal/store` 用例读 `TEST_DB_DSN`（或 `TEST_DB_HOST/PORT/NAME/USER/PASSWORD`）；
+  未提供时跳过，`make check` 仍全绿。`make check` 只跑本服务模块（`./...`），不含 `tools/` 独立 module。
 - 依赖安装与前端命令一律带 `timeout`。
 
 ## 提交

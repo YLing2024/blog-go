@@ -28,7 +28,7 @@
 
 ## 数据模型约定
 
-时间一律为**本地时区**文本 `YYYY-MM-DD HH:MM:SS`（SQLite 与 MySQL 同构），由应用写入。
+时间一律为**本地时区**文本 `YYYY-MM-DD HH:MM:SS`，由应用写入（存于 MySQL 的 `longtext` 列）。
 
 | 实体 | 字段 | 说明 |
 |---|---|---|

@@ -21,6 +21,6 @@ RUN useradd --system --create-home --home-dir /var/lib/blog-go blog
 USER blog
 WORKDIR /var/lib/blog-go
 COPY --from=build /out/blog-go /usr/local/bin/blog-go
-ENV HOST=127.0.0.1 PORT=19255 DB_DRIVER=sqlite DB_PATH=/var/lib/blog-go/blog.db UPLOAD_DIR=/var/lib/blog-go/uploads
+ENV HOST=127.0.0.1 PORT=19255 UPLOAD_DIR=/var/lib/blog-go/uploads
 EXPOSE 19255
 ENTRYPOINT ["/usr/local/bin/blog-go"]

@@ -15,7 +15,7 @@ ExecStart=/usr/local/bin/blog-go
 Restart=on-failure
 RestartSec=2
 
-# 最小权限：只允许写自己的数据目录（SQLite 库 + 上传图片）。
+# 最小权限：只允许写自己的数据目录（上传图片）；数据库在外部 MySQL。
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

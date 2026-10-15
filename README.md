@@ -3,8 +3,9 @@
 个人博客后端 API 的 **Go 重写版**。行为逐条对齐旧实现（`/root/proj/blog/server`，Node 24 + Express 4 + SQLite），
 默认监听 `127.0.0.1:19255`（旧实现的 `4000` 不动，两者并存）。
 
-- **单二进制**：站点前端产物经 `//go:embed` 打进二进制，无外部运行时依赖（SQLite 为纯 Go 实现，无需 cgo）。
-- **双库支持**：`DB_DRIVER=sqlite`（默认）或 `mysql`，配置切换；`migrate-data` 子命令做跨库搬运与逐表校验。
+- **单二进制**：站点前端产物经 `//go:embed` 打进二进制。
+- **仅 MySQL**：运行时只有 MySQL 一条存储路径（`github.com/go-sql-driver/mysql`）；不再支持 SQLite。
+  旧 SQLite 数据用独立工具 `tools/migrate-sqlite-to-mysql/` 一次性搬运。
 - **双认证模式**：`builtin` 自带账号口令 + cookie 会话；`sso` 只信任网关注入的 `X-Auth-User`。
 
 ## 构建与运行
@@ -19,18 +20,17 @@ make vet            # go vet
 make check          # 聚合门禁：路由↔文档机检 + go vet + go test（退出码 0 才算过）
 
 make run            # 构建后直接运行（读环境变量）
-./blog-go migrate-data --help   # 跨库搬运
 ```
 
-首次启动会自动建库建表、写入 3 篇示例文章；若未设置 `BLOG_ADMIN_PASSWORD`，
+首次启动会自动建表、写入 3 篇示例文章；若未设置 `BLOG_ADMIN_PASSWORD`，
 会随机生成 16 位初始管理员口令并**只打印一次**，请立即保存。
 想自己指定，就在首次启动前设置 `BLOG_ADMIN_USER` 与 `BLOG_ADMIN_PASSWORD`。
 
 ## 配置（环境变量）
 
 配置**只读环境变量**（对齐旧实现 systemd `EnvironmentFile` 的部署口径），不读 YAML / `.env` 文件。
-键名与默认值逐条对齐旧实现；唯一新增的是数据库选择键（`DB_DRIVER` 等，见 `docs/DB.md`）与
-`HOST` / `UPLOAD_DIR`。全部键见 `.env.example`。
+键名与默认值逐条对齐旧实现；数据库为 MySQL（`DB_*`，见 `docs/DB.md`），另有 `HOST` / `UPLOAD_DIR`。
+全部键见 `.env.example`。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -38,9 +38,11 @@ make run            # 构建后直接运行（读环境变量）
 | `HOST` | `127.0.0.1` | 监听地址（对外由 nginx 反代） |
 | `PORT` | `19255` | 监听端口（旧实现为 `4000`） |
 | `JWT_SECRET` | `dev-secret` | JWT 签名密钥，生产必须显式设置 |
-| `DB_DRIVER` | `sqlite` | `sqlite` / `mysql` |
-| `DB_PATH` | `./data/blog.db` | SQLite 文件路径（仅 sqlite 模式） |
-| `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` | `3306` / 空 | MySQL 连接参数（仅 mysql 模式） |
+| `DB_HOST` | `127.0.0.1` | MySQL 主机 |
+| `DB_PORT` | `3306` | MySQL 端口 |
+| `DB_NAME` | 空 | 库名（必填，或给 `DB_DSN`） |
+| `DB_USER` | 空 | 库用户（必填，或给 `DB_DSN`） |
+| `DB_PASSWORD` | 空 | 库口令（只从环境注入） |
 | `DB_DSN` | 空 | 直接给出完整 DSN，设置后忽略上面的分段参数 |
 | `ADMIN_REDIS_URL` | `redis://127.0.0.1:6379` | 会话校验用的 Redis；不可用时降级 |
 | `ADMIN_REDIS_PREFIX` | `admin:session:` | 会话 key 前缀，支持逗号分隔多前缀 |
@@ -54,21 +56,21 @@ make run            # 构建后直接运行（读环境变量）
 ## 目录
 
 ```
-cmd/blog-go/         进程入口（装配 / 优雅退出 / migrate-data）
+cmd/blog-go/         进程入口（装配 / 优雅退出）
 internal/
   config/            环境变量解析
-  store/             方言无关的业务 SQL 层 + 跨库搬运
-  sqlite/ mysql/     两套薄方言（DDL / upsert / 自增回填 / 列探测 / DSN）
-  snowflake/ blogs 对外标识（19 位字符串 ID，防精度丢失）
+  store/             业务 SQL 层 + MySQL 建表/增量迁移 + DSN
+  snowflake/         对外标识（19 位字符串 ID，防精度丢失）
   bcrypt/ blowfish/  纯 Go bcrypt（对齐旧实现 bcryptjs 的编码与校验）
   jwt/               HS256 最小实现（含 preview 声明）
   auth/              双认证模式、cookie 会话、Redis 第二通道
   posts/ collections/ tags/  文章 / 合集 / 标签业务
   httpapi/           HTTP 契约层（标准库 net/http）
+tools/migrate-sqlite-to-mysql/  旧 SQLite → MySQL 一次性迁移（独立 module，不进服务运行时）
 web/                 站点前端源码（原样搬入；产物嵌入，dist 不入库）
 deploy/              systemd / nginx 样例（只提交，不安装）
 docs/API.md          接口契约（权威，机检）
-docs/DB.md           双库映射与迁移
+docs/DB.md           表结构与迁移口径
 ```
 
 ## 接口契约
@@ -80,9 +82,9 @@ docs/DB.md           双库映射与迁移
 
 ## 数据库
 
-见 `docs/DB.md`。默认 SQLite；`DB_DRIVER=mysql` 需 `DB_HOST`/`DB_NAME`/`DB_USER`（或 `DB_DSN`），
-未配置 MySQL 时**完全不加载驱动、不建立连接**。迁移只做增量（禁止 `DROP` / `TRUNCATE` / 重建表），
-现网老库原地升级、数据保留。
+见 `docs/DB.md`。只支持 MySQL，需 `DB_NAME`/`DB_USER`（或一条 `DB_DSN`）；启动时自建缺表缺列。
+迁移只做增量（禁止 `DROP` / `TRUNCATE` / 重建表），现网/云库老数据原地升级、数据保留。
+表结构逐条对齐云库 `blog`（`go-rewrite/docs/mysql-schema-cloud.md`）。
 
 ## 与旧实现的有意差异
 
@@ -90,7 +92,7 @@ docs/DB.md           双库映射与迁移
 
 1. 默认端口 `4000` → `19255`（新旧并存）。
 2. 默认监听地址显式化为 `HOST`（默认 `127.0.0.1`）。
-3. 新增数据库选择（`DB_DRIVER` 等）与 `migrate-data` 子命令（需求书要求）。
+3. 存储由 SQLite 改为 MySQL（2026-10-16 口径），旧库数据用 `tools/migrate-sqlite-to-mysql/` 搬运。
 4. 新增 `UPLOAD_DIR`（旧实现写死 `server/uploads`）。
 5. 站点由本进程直接托管（旧实现由 nginx 承担）；nginx 侧的非站点行为（认证网关、其它站点反代）不复刻。
 
