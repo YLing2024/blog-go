@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Linden Zhang — a quiet corner of the web, made by hand. Interfaces on the front, infrastructure underneath." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Linden" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23171512'/%3E%3Crect x='26' y='26' width='12' height='12' fill='%23a05b0c' transform='rotate(45 32 32)'/%3E%3C/svg%3E"
+    />
+    <link id="hljs-light" rel="stylesheet" href="/hljs/github.css" media="(prefers-color-scheme: light)" />
+    <link id="hljs-dark" rel="stylesheet" href="/hljs/github-dark.css" media="(prefers-color-scheme: dark)" />
+    <script>
+      // 主题：在首帧前落地（深浅色 + 代码高亮皮肤），避免刷新时闪回系统配色
+      try {
+        var t = localStorage.getItem('site_theme')
+        if (t === 'light' || t === 'dark') {
+          document.documentElement.dataset.theme = t
+          var l = document.getElementById('hljs-light')
+          var d = document.getElementById('hljs-dark')
+          if (l) l.setAttribute('media', t === 'dark' ? 'not all' : 'all')
+          if (d) d.setAttribute('media', t === 'dark' ? 'all' : 'not all')
+        }
+      } catch (e) {
+        // localStorage 不可用（隐私模式）：保持默认，跟随系统配色
+      }
+    </script>
+    <title>Linden Zhang — A quiet corner of the web</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

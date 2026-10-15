@@ -1,0 +1,39 @@
+/* 朴素排版 —— 全站交回浏览器默认渲染。
+   本文件是本仓库唯一的 CSS，只保留让页面「能用」的最低限度规则，
+   每条都注明保留理由；除此之外不写任何自定义视觉。 */
+
+/* 豁免 1 · 深浅色：用浏览器默认配色，不自己写颜色。
+   手动选择的落地方式见 src/theme.ts（写 <html data-theme>）。 */
+:root {
+  color-scheme: light dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/* 豁免 2 · 正文限宽：宽屏下没有上限会长到难以阅读，两侧留出内边距。 */
+.container {
+  max-width: 72ch;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+/* 豁免 3 · 媒体不溢出：图片、视频最宽不超过容器，避免撑破页面。 */
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 豁免 4 · 横向滚动：代码块与表格内容过宽时，在自身范围内滚动而不是撑破页面。 */
+pre,
+table {
+  overflow-x: auto;
+}
+
+/* 豁免 5 · 焦点：不写 outline: none，保留浏览器默认焦点环。 */
