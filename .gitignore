@@ -1,0 +1,23 @@
+# 构建产物与依赖
+/blog-go
+/web/node_modules/
+/web/dist/
+*.tsbuildinfo
+
+# 运行时数据（SQLite 库、上传图片含真实内容）
+/data/
+/uploads/
+.env
+.env.local
+
+# 日志与临时文件
+*.log
+.tmp/
+
+# 编辑器/系统
+.DS_Store
+.vscode/
+.idea/
+
+# 验收临时产物
+/.acceptance/
