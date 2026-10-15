@@ -107,9 +107,9 @@ func (a *Authenticator) VerifyCredentials(ctx context.Context, username, passwor
 		return User{}, false, nil
 	}
 	var (
-		id    int64
-		name  string
-		hash  string
+		id   int64
+		name string
+		hash string
 	)
 	err := a.db.SQL.QueryRowContext(ctx,
 		"SELECT id, username, password FROM users WHERE username = ?", username).Scan(&id, &name, &hash)

@@ -47,7 +47,7 @@ func (c *Context) optionalStringField(key string) *string {
 	return &value
 }
 
-// truthyStringField 复刻旧实现的 `String(value || '')`：字段缺失返回 present=false，
+// truthyStringField 复刻旧实现 JS 的「取值或空串」语义：字段缺失返回 present=false，
 // 出现但为 JS 假值（null/0/""/false）时 value 为空串，否则为 String(value)。
 // 用于「null 会清空/归一为空串」的字段（subtitle、slug、name）。
 func (c *Context) truthyStringField(key string) (value string, present bool) {

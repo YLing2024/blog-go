@@ -92,14 +92,14 @@ type scanner interface{ Scan(dest ...any) error }
 // scanSummary 扫描「不含正文」的查询行。
 func scanSummary(s scanner) (Summary, bool, error) {
 	var (
-		id                                       int64
-		title, subtitle, slug                    string
-		publicID                                 sql.NullString
-		excerpt, tagStr                          string
-		published                                int64
-		createdAt, updatedAt                     string
-		cID                                      sql.NullInt64
-		cName, cSlug, cPublicID                  sql.NullString
+		id                      int64
+		title, subtitle, slug   string
+		publicID                sql.NullString
+		excerpt, tagStr         string
+		published               int64
+		createdAt, updatedAt    string
+		cID                     sql.NullInt64
+		cName, cSlug, cPublicID sql.NullString
 	)
 	err := s.Scan(&id, &title, &subtitle, &slug, &publicID, &excerpt, &tagStr,
 		&published, &createdAt, &updatedAt, &cID, &cName, &cSlug, &cPublicID)
@@ -127,14 +127,14 @@ func scanSummary(s scanner) (Summary, bool, error) {
 // scanDetail 扫描「含正文」的查询行。
 func scanDetail(s scanner) (Detail, bool, error) {
 	var (
-		id                                      int64
-		title, subtitle, slug                   string
-		publicID                                sql.NullString
-		content, excerpt, tagStr                string
-		published                               int64
-		createdAt, updatedAt                    string
-		cID                                     sql.NullInt64
-		cName, cSlug, cPublicID                 sql.NullString
+		id                       int64
+		title, subtitle, slug    string
+		publicID                 sql.NullString
+		content, excerpt, tagStr string
+		published                int64
+		createdAt, updatedAt     string
+		cID                      sql.NullInt64
+		cName, cSlug, cPublicID  sql.NullString
 	)
 	err := s.Scan(&id, &title, &subtitle, &slug, &publicID, &content, &excerpt, &tagStr,
 		&published, &createdAt, &updatedAt, &cID, &cName, &cSlug, &cPublicID)
