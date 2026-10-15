@@ -1,9 +1,11 @@
 // Package config 负责 blog-go 的环境变量解析与校验。
 //
-// 键名与默认值逐条对齐旧实现 server/src/：AUTH_MODE / PORT / DB_PATH / JWT_SECRET /
+// 键名与默认值逐条对齐旧实现 server/src/：AUTH_MODE / PORT / JWT_SECRET /
 // BLOG_ADMIN_USER / BLOG_ADMIN_PASSWORD / ADMIN_REDIS_URL / ADMIN_REDIS_PREFIX /
 // PUBLIC_SITE_URL / PREVIEW_TTL / SNOWFLAKE_WORKER_ID；非法 AUTH_MODE 回落 builtin。
-// 本服务端口改为 19255（新旧并存，旧 4000 不动），另新增数据库选择键（见 docs/DB.md）。
+// 本服务端口改为 19255（新旧并存，旧 4000 不动）。
+// 2026-10-16 口径变更后只支持 MySQL：DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD
+// （或一条 DB_DSN），不再有 DB_DRIVER 开关与 SQLite 路径（见 docs/DB.md）。
 package config
 
 import (
@@ -23,16 +25,6 @@ const (
 	AuthSSO AuthMode = "sso"
 )
 
-// DBDriver 数据库方言。
-type DBDriver string
-
-const (
-	// DBDriverSQLite 纯 Go SQLite（默认，零额外配置）。
-	DBDriverSQLite DBDriver = "sqlite"
-	// DBDriverMySQL 需 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD 或一条 DB_DSN。
-	DBDriverMySQL DBDriver = "mysql"
-)
-
 // Config 是运行时配置快照。
 type Config struct {
 	Host string
@@ -43,8 +35,6 @@ type Config struct {
 	AdminUser     string
 	AdminPassword string
 
-	DBDriver   DBDriver
-	DBPath     string
 	DBHost     string
 	DBPort     int
 	DBName     string
@@ -90,8 +80,6 @@ func Load(get func(string) string) (*Config, error) {
 		PublicSiteURL:     strings.TrimRight(strings.TrimSpace(get("PUBLIC_SITE_URL")), "/"),
 		UploadDir:         trimOr(get("UPLOAD_DIR"), "./data/uploads"),
 		PreviewTTL:        time.Minute * 30,
-		DBDriver:          DBDriverSQLite,
-		DBPath:            trimOr(get("DB_PATH"), "./data/blog.db"),
 		SnowflakeWorkerID: 0,
 	}
 	cfg.AuthMode = normalizeAuthMode(get("AUTH_MODE"), &cfg.Warnings)
@@ -128,36 +116,23 @@ func normalizeAuthMode(raw string, warnings *[]string) AuthMode {
 	}
 }
 
-// loadDB 解析数据库选择：默认 sqlite；只有 DB_DRIVER=mysql 时才读取 MySQL 连接参数。
+// loadDB 解析 MySQL 连接参数：一条 DB_DSN，或 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD。
+// 库名与用户必填（或给 DB_DSN）；主机默认 127.0.0.1、端口默认 3306。
 func loadDB(cfg *Config, get func(string) string) error {
-	raw := strings.ToLower(strings.TrimSpace(get("DB_DRIVER")))
-	switch raw {
-	case "", "sqlite":
-		cfg.DBDriver = DBDriverSQLite
-		return nil
-	case "mysql":
-		cfg.DBDriver = DBDriverMySQL
-		dsn := strings.TrimSpace(get("DB_DSN"))
-		if dsn != "" {
-			cfg.DBDSN = dsn
-			return nil
-		}
-		cfg.DBHost = strings.TrimSpace(get("DB_HOST"))
-		cfg.DBName = strings.TrimSpace(get("DB_NAME"))
-		cfg.DBUser = strings.TrimSpace(get("DB_USER"))
-		cfg.DBPassword = get("DB_PASSWORD")
-		if cfg.DBHost == "" || cfg.DBName == "" || cfg.DBUser == "" {
-			return &ConfigError{Message: "DB_DRIVER=mysql 需要 DB_HOST/DB_NAME/DB_USER（或一条 DB_DSN）"}
-		}
-		port, err := pickInt(get("DB_PORT"), "DB_PORT", 3306, 1, 65535)
-		if err != nil {
-			return err
-		}
-		cfg.DBPort = port
-		return nil
-	default:
-		return &ConfigError{Message: fmt.Sprintf("DB_DRIVER 只能是 sqlite / mysql，当前为「%s」", raw)}
+	cfg.DBHost = trimOr(get("DB_HOST"), "127.0.0.1")
+	cfg.DBName = strings.TrimSpace(get("DB_NAME"))
+	cfg.DBUser = strings.TrimSpace(get("DB_USER"))
+	cfg.DBPassword = get("DB_PASSWORD")
+	cfg.DBDSN = strings.TrimSpace(get("DB_DSN"))
+	port, err := pickInt(get("DB_PORT"), "DB_PORT", 3306, 1, 65535)
+	if err != nil {
+		return err
 	}
+	cfg.DBPort = port
+	if cfg.DBDSN == "" && (cfg.DBName == "" || cfg.DBUser == "") {
+		return &ConfigError{Message: "需要 DB_NAME 与 DB_USER（或一条 DB_DSN）"}
+	}
+	return nil
 }
 
 // parseTTL 解析 jsonwebtoken 风格时长：纯数字按秒；带单位支持 s/m/h/d/w。
@@ -221,15 +196,11 @@ func (c *Config) Describe() string {
 
 // databaseDesc 输出不含口令的库描述。
 func (c *Config) databaseDesc() string {
-	if c.DBDriver == DBDriverMySQL {
-		if c.DBDSN != "" || c.DBName != "" {
-			name := c.DBName
-			if name == "" {
-				name = "(DB_DSN)"
-			}
-			return "mysql " + name
-		}
-		return "mysql"
+	if c.DBDSN != "" {
+		return "mysql (DB_DSN)"
 	}
-	return "sqlite " + c.DBPath
+	if c.DBName != "" {
+		return "mysql " + c.DBName
+	}
+	return "mysql"
 }

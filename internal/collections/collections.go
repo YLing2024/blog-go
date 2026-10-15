@@ -157,7 +157,7 @@ func (r *Repo) Create(ctx context.Context, in Input) (*Collection, error) {
 		if in.Description != nil {
 			description = strings.TrimSpace(*in.Description)
 		}
-		id, err := r.DB.Dialect().InsertReturningID(ctx, q,
+		id, err := store.InsertReturningID(ctx, q,
 			"INSERT INTO collections (name, slug, public_id, description, created_at) VALUES (?, ?, ?, ?, ?)",
 			name, slugValue, r.Gen.Next(), description, store.NowText())
 		if err != nil {

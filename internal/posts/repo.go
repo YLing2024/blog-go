@@ -61,7 +61,7 @@ func (r *Repo) ListPublic(ctx context.Context, page int, tag string) (ListResult
 	conditions := []string{"p.published = 1"}
 	args := []any{}
 	if tag != "" {
-		conditions = append(conditions, r.DB.Dialect().TagLikeClause("p.tags"))
+		conditions = append(conditions, store.TagLikeClause("p.tags"))
 		args = append(args, "%,"+store.EscapeLike(tag)+",%")
 	}
 	where := strings.Join(conditions, " AND ")
@@ -214,7 +214,7 @@ func (r *Repo) Create(ctx context.Context, in CreateInput) (*Detail, error) {
 			return err
 		}
 		now := store.NowText()
-		id, err := r.DB.Dialect().InsertReturningID(ctx, q,
+		id, err := store.InsertReturningID(ctx, q,
 			`INSERT INTO posts (title, slug, public_id, content, excerpt, subtitle, tags, published, collection_id, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			strings.TrimSpace(in.Title),
