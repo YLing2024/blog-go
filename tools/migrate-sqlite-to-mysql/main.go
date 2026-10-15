@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,7 +78,8 @@ var ddl = []string{
 		") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci",
 }
 
-// tables 是搬运顺序（先父后子，满足外键）。逐表列顺序显式给出（与服务建表列一致）。
+// tables 是搬运顺序（先父后子，满足外键）。四张表的 id 均为自增主键，因此这张清单同时是
+// 「自增序号延续」的处理清单。逐表列顺序显式给出（与服务建表列一致）。
 var tables = []string{"collections", "posts", "users", "tags"}
 
 var columns = map[string][]string{
@@ -240,13 +242,30 @@ func dryRun(ctx context.Context, src *sql.DB, opt options) error {
 	return nil
 }
 
-// report 执行「源计数 → （可选）拷贝 → 目标计数 → 抽样比对」，逐表打印结果。
+// report 执行「源计数 → （可选）拷贝 → 目标计数 → 抽样比对 → （可选）自增序号延续」。
 func report(ctx context.Context, src, dst *sql.DB, opt options, verifyOnly bool) error {
 	if verifyOnly {
 		fmt.Printf("校验（verify）：源 %s → 目标 MySQL\n", opt.sqlitePath)
 	} else {
 		fmt.Printf("搬运：源 %s → 目标 MySQL\n", opt.sqlitePath)
 	}
+	// 自增序号要读源库 sqlite_sequence，且目标侧读值必须走同一连接并关掉 information_schema 缓存，
+	// 否则 MySQL 8 会返回迁移前的旧 AUTO_INCREMENT（见 docs/DB.md 第 4 节）。
+	seqs, err := sourceSequences(ctx, src)
+	if err != nil {
+		return err
+	}
+	aiConn, err := dst.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("获取目标库自增读连接失败: %w", err)
+	}
+	defer func() { _ = aiConn.Close() }()
+	if _, err := aiConn.ExecContext(ctx, "SET SESSION information_schema_stats_expiry = 0"); err != nil {
+		return fmt.Errorf("关闭目标库 information_schema 统计缓存失败: %w", err)
+	}
+	autoPlans := make([]autoIncrementPlan, 0, len(tables))
+	autoMismatches := 0
+
 	var totalSrc, totalWritten int64
 	mismatches := 0
 	for _, table := range tables {
@@ -290,16 +309,170 @@ func report(ctx context.Context, src, dst *sql.DB, opt options, verifyOnly bool)
 		for _, m := range bad {
 			fmt.Println("      - " + m)
 		}
+
+		srcSeq, haveSeq := seqs[table]
+		plan, err := planAutoIncrement(ctx, aiConn, table, srcSeq, haveSeq, !verifyOnly)
+		if err != nil {
+			return err
+		}
+		autoPlans = append(autoPlans, plan)
+		if verifyOnly && !plan.ok() {
+			autoMismatches++
+		}
 	}
 	if verifyOnly {
 		fmt.Printf("  合计 源 %d 行\n", totalSrc)
 	} else {
 		fmt.Printf("  合计 源 %d 行，写入 %d 行\n", totalSrc, totalWritten)
 	}
-	if mismatches > 0 {
-		return fmt.Errorf("有 %d 张表条数或抽样不一致", mismatches)
+	printAutoIncrementReport(autoPlans, verifyOnly)
+	if mismatches > 0 || autoMismatches > 0 {
+		return fmt.Errorf("有 %d 张表条数或抽样不一致、%d 张表自增序号未延续", mismatches, autoMismatches)
 	}
 	return nil
+}
+
+// autoIncrementPlan 记录单表「自增序号延续」的执行或校验结果。
+//
+// 语义来源：SQLite 把「已用过的最大 id」记在 sqlite_sequence.seq（删除行也不回退），
+// 下一条新记录的 id 是 seq+1；而 MySQL 的 AUTO_INCREMENT 本身就表示「下一条 id」。
+// 两者差一，故源侧要 +1：只有把目标 AUTO_INCREMENT 抬到 max(源 seq+1, 目标 max(id)+1)，
+// 迁移后新建记录才会拿到与旧实现一致的下一个 id，避免 id 回退或复用。
+type autoIncrementPlan struct {
+	table   string
+	haveSeq bool
+	srcSeq  int64 // 源库 sqlite_sequence 记录的最大已用 id
+	maxID   int64 // 目标当前 max(id)
+	before  int64 // 目标当前 AUTO_INCREMENT
+	want    int64 // 期望下限
+	after   int64 // 调整后（拷贝）或现值（校验）
+	raised  bool  // 拷贝模式下是否上调过
+}
+
+// ok 是校验模式的判据：目标 AUTO_INCREMENT 已达到延续要求。
+func (p autoIncrementPlan) ok() bool { return p.after >= p.want }
+
+// dbQuerier 抽出 *sql.DB 与 *sql.Conn 共有的能力，让自增步骤固定在一条连接上执行。
+type dbQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// sourceSequences 读源库 sqlite_sequence（仅含 AUTOINCREMENT 表的库才有该表），返回
+// 表名 → 已用过的最大 id。源库没有 sqlite_sequence 表时返回空 map，不是错误——此时
+// 目标侧按 max(id)+1 处理。
+func sourceSequences(ctx context.Context, src *sql.DB) (map[string]int64, error) {
+	seqs := map[string]int64{}
+	var n int
+	if err := src.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'").Scan(&n); err != nil {
+		return nil, fmt.Errorf("探测源库 sqlite_sequence 失败: %w", err)
+	}
+	if n == 0 {
+		return seqs, nil
+	}
+	rows, err := src.QueryContext(ctx, "SELECT name, seq FROM sqlite_sequence")
+	if err != nil {
+		return nil, fmt.Errorf("读取源库 sqlite_sequence 失败: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var seq sql.NullInt64
+		if err := rows.Scan(&name, &seq); err != nil {
+			return nil, fmt.Errorf("扫描源库 sqlite_sequence 失败: %w", err)
+		}
+		if seq.Valid {
+			seqs[name] = seq.Int64
+		}
+	}
+	return seqs, rows.Err()
+}
+
+// planAutoIncrement 计算目标表 AUTO_INCREMENT 的期望下限，并在拷贝模式下（apply=true）
+// 只升不降地上调：want = max(源 seq+1, 目标 max(id)+1)；源无 seq 条目时退化为目标 max(id)+1。
+// 目标现值已不小于 want 时原样保留，绝不覆盖更大的现有值。校验模式只读不写。
+func planAutoIncrement(ctx context.Context, q dbQuerier, table string, srcSeq int64, haveSeq, apply bool) (autoIncrementPlan, error) {
+	plan := autoIncrementPlan{table: table, haveSeq: haveSeq, srcSeq: srcSeq}
+	maxID, err := targetMaxID(ctx, q, table)
+	if err != nil {
+		return plan, err
+	}
+	before, err := targetAutoIncrement(ctx, q, table)
+	if err != nil {
+		return plan, err
+	}
+	want := maxID + 1
+	if haveSeq && srcSeq+1 > want {
+		want = srcSeq + 1
+	}
+	plan.maxID, plan.before, plan.want, plan.after = maxID, before, want, before
+	if apply && want > before {
+		if _, err := q.ExecContext(ctx, "ALTER TABLE "+table+" AUTO_INCREMENT = "+strconv.FormatInt(want, 10)); err != nil {
+			return plan, fmt.Errorf("上调目标表 %s AUTO_INCREMENT 失败: %w", table, err)
+		}
+		after, err := targetAutoIncrement(ctx, q, table)
+		if err != nil {
+			return plan, err
+		}
+		plan.after, plan.raised = after, true
+	}
+	return plan, nil
+}
+
+// targetMaxID 读目标表当前最大 id（空表为 0）。
+func targetMaxID(ctx context.Context, q dbQuerier, table string) (int64, error) {
+	var n int64
+	if err := q.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) FROM "+table).Scan(&n); err != nil {
+		return 0, fmt.Errorf("读取目标表 %s 最大 id 失败: %w", table, err)
+	}
+	return n, nil
+}
+
+// targetAutoIncrement 读目标表当前 AUTO_INCREMENT（information_schema，调用方须已关掉其统计缓存）。
+func targetAutoIncrement(ctx context.Context, q dbQuerier, table string) (int64, error) {
+	var n sql.NullInt64
+	err := q.QueryRowContext(ctx,
+		"SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?",
+		table).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("读取目标表 %s AUTO_INCREMENT 失败: %w", table, err)
+	}
+	if !n.Valid {
+		return targetMaxID(ctx, q, table)
+	}
+	return n.Int64, nil
+}
+
+// printAutoIncrementReport 打印逐表的自增序号延续对照（拷贝）或校验结果（verify）。
+func printAutoIncrementReport(plans []autoIncrementPlan, verifyOnly bool) {
+	if len(plans) == 0 {
+		return
+	}
+	if verifyOnly {
+		fmt.Println("  自增序号校验（源 sqlite_sequence.seq 为旧库已用过的最大 id，下一条应为 seq+1）：")
+	} else {
+		fmt.Println("  自增序号延续（源 sqlite_sequence.seq 为旧库已用过的最大 id，下一条应为 seq+1）：")
+	}
+	for _, p := range plans {
+		seq := "无条目"
+		if p.haveSeq {
+			seq = fmt.Sprintf("%d（下一条 %d）", p.srcSeq, p.srcSeq+1)
+		}
+		if verifyOnly {
+			status := "OK"
+			if !p.ok() {
+				status = fmt.Sprintf("不一致：应 >= %d", p.want)
+			}
+			fmt.Printf("    %-12s 源 seq %s  目标 AUTO_INCREMENT %d  %s\n", p.table, seq, p.after, status)
+			continue
+		}
+		if p.raised {
+			fmt.Printf("    %-12s 源 seq %s  目标 AUTO_INCREMENT %d → %d\n", p.table, seq, p.before, p.after)
+		} else {
+			fmt.Printf("    %-12s 源 seq %s  目标 AUTO_INCREMENT %d  已达标\n", p.table, seq, p.after)
+		}
+	}
 }
 
 // readTable 读出整表（源库只发 SELECT），[]byte 归一为 string。
