@@ -61,8 +61,8 @@ function Nav() {
   return (
     <header>
       <nav className="container" aria-label="Primary">
-        <Link to="/" aria-label="Linden Zhang — Home">
-          ◇
+        <Link to="/" aria-label="Linden Zhang — Home" style={{ display: "inline-flex" }}>
+          <svg width="20" height="20" viewBox="0 0 512 512" aria-hidden="true" style={{ display: 'block' }}><rect x="120" y="150" width="272" height="30" rx="15" fill="currentColor"/><rect x="120" y="218" width="200" height="30" rx="15" fill="currentColor" opacity="0.55"/><rect x="120" y="286" width="240" height="30" rx="15" fill="currentColor" opacity="0.35"/><rect x="120" y="354" width="132" height="30" rx="15" fill="#1D4ED8"/></svg>
         </Link>{' '}
         {NAV_LINKS.map(({ to, label, end }) => (
           <Fragment key={to}>
